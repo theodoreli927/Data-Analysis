@@ -1,0 +1,982 @@
+---
+html_document:
+  df_print: paged
+author: "Theodore Li"
+date: "10/18/2024"
+output:
+  pdf_document:
+     latex_engine: xelatex
+     highlight: haddock
+  html_document:
+    df_print: paged
+subtitle: 
+keep_tex: false
+number_sections: false
+title: "LOESS regression and distance weighted KNN analysis"
+geometry: margin = 0.5in
+header-includes:
+- \usepackage{booktabs}
+- \usepackage{longtable}
+- \usepackage{array}
+- \usepackage{multirow}
+- \usepackage{wrapfig}
+- \usepackage{float}
+- \usepackage{colortbl}
+- \usepackage{pdflscape}
+- \usepackage{tabu}
+- \usepackage{threeparttable}
+- \usepackage{threeparttablex}
+- \usepackage[normalem]{ulem}
+- \usepackage{makecell}
+- \usepackage{xcolor}
+editor_options:
+  chunk_output_type: inline
+documentclass: article
+urlcolor: blue
+---
+  
+<!-- The above is set to automatically compile to a .pdf file.   -->
+<!-- It will only succeed if LaTeX is installed. -->
+
+
+```{r setup, , include=FALSE}
+# This is the setup chunk
+#  Here you can set global options for the entire document
+
+library(knitr) # I recommend doing this here
+library(ggplot2)
+
+
+# Although you can call functions from a library using the following notation
+#  without loading the entire library.
+ knitr::opts_chunk$set(echo = TRUE, 
+                       comment = NA, # Required
+                       fig.path = "./figures/",  # Store all figures here in relative path (make the folder first)
+                      fig.align = "center",
+                      fig.width = 7,
+                      fig.height = 7,
+                       message = FALSE, # Turn off load messages
+                       warning = FALSE # Turn off warnings
+                       )
+
+```
+\section*{Part 1: Implementing a custom LOESS regression}
+```{r}
+
+#A helper function to calculate the weights
+# Using the Tukey tri-weight equation from: 
+
+# https://rafalab.dfci.harvard.edu/dsbook/smoothing.html#local-weighted-regression-loess
+#Inputs:
+# x_i: the specific neighbor point whose weight we're determining
+# x_0: the fixed data point
+# window_size: size of the window for loess
+#
+#return
+#weight: numeric weight corresponding to x_i
+tri_weight_func <- function(x_i, x_0, window_size){
+  
+  h <- floor(window_size/2)
+  u = (x_i - x_0)/h
+  
+  # Tukey tri-weight formula: W(u) = (1 - u^3)^3 for u in [0, 1]
+  if (abs(u) <= 1) {
+    weight <- (1 - abs(u)^3)^3
+  } else {
+    weight <- 0 # Points outside the window get a weight of 0
+  }
+  
+  return(weight)
+}
+
+# Input:
+# * x - a numeric input vector
+# * y - a numeric response
+# * degree should be 1 or 2 only
+# * span can be any value in interval (0, 1) non-inclusive.
+#
+# If show.plot = TRUE then you must show a plot of either the final fit
+
+myloess <- function(x, y, span = 0.5, degree = 1, show.plot = TRUE){
+  
+  #total number of input data
+  n <- length(x)
+  
+  #Placeholder vector to store predictions
+  fitted_values <- numeric(n)
+  
+  #Create a for loop to iterate through each data point
+  for (i in 1:n) {
+    #Get the average distance between x[i] and all other points
+    distance <- abs(x - x[i])
+    
+    #Get the window size from the argument span, we take
+    # the greatest integer <= span * n
+    # This is what breaks our data into bins for us to build a regression
+    # curve on.
+    window_size <- floor(span * n)
+    
+    #We order the distance from closest to furthest and
+    #take a total of "window_size" number of neighbor points as a subset of input points
+    neighbors <- order(distance)[1:window_size]
+    
+    #Find the weights corresponding to the neighbors of x
+    weights <- sapply(x[neighbors], tri_weight_func, x_0 = x[i], window_size = window_size)
+    
+    # Create the design matrix used for calculations of coefficients (based on degree)
+    if (degree == 1) {
+      #X_mat is a matrix with 2 columns
+      #Create a column of 1s for the intercept
+      #Create column of x values for corresponding neighbor points
+      X_mat <- cbind(1, x[neighbors]) 
+    } else if (degree == 2) {
+      #X_mat is a matrix with 3 columns
+      #Column 1: intercept
+      #Column 2: x values
+      #Column 3: x^2 values
+      X_mat <- cbind(1, x[neighbors], x[neighbors]^2)  
+    } 
+    #Turn vector of weights into a weight matrix
+    W <- diag(weights)
+    
+    #Follow the formula on Lecture 12 slide 5 to solve for coefficients (beta)
+    beta <- solve(t(X_mat) %*% W %*% X_mat) %*% (t(X_mat) %*% W %*% y[neighbors])
+      
+    #Compute the predictions based on corresponding degree argument
+     if (degree == 1) {
+      fitted_values[i] <- beta[1] + beta[2] * x[i]  # Linear prediction
+    } else if (degree == 2) {
+      fitted_values[i] <- beta[1] + beta[2] * x[i] + beta[3] * x[i]^2  # polynomial prediction
+    }
+  }
+  
+  # Calculate the residuals
+  residuals <- y - fitted_values
+  #Use residuals for calculating SSE
+  SSE <- sum(residuals^2)
+  
+  #Calculate MSE
+  MSE <- SSE/n
+  
+  #Create the plot
+  plot <- ggplot(data = data.frame(x, y), aes(x = x, y = y)) +
+  geom_point(color = "blue") +                         # Scatter plot
+  geom_line(aes(y = fitted_values), color = "red", lwd = 1.5) +  # Fitted values line
+  ggtitle("Custom LOESS") +
+  xlab("x") +
+  ylab("y") +
+  annotate("text", x = max(x), y = max(y), label = paste("Span:", span, "Degree:", degree),
+           hjust = 1, vjust = 1, size = 4, color = "black", fontface = "bold")
+   
+  # Display the plot if desired
+  if (show.plot) {
+    print(plot)
+  }
+
+  
+  return(list("span" = span, 
+              "fitted_values" = fitted_values,
+              "degree" = degree, 
+              "N_total" = n, 
+              "MSE" = MSE,
+              "SSE" = SSE, 
+              "loessplot" = plot)) 
+}
+```
+
+```{r}
+library(ggplot2)
+
+#Load in the ozone data
+load("C:/Users/theod/OneDrive/Documents/CMDA_4654/Exercise 2/ozone.RData")
+```
+\section*{1.)}
+```{r}
+x <- ozone$temperature
+y <- ozone$ozone
+n <- length(x)
+
+#Iterate through degrees of 1 to 6 and print the MSE to assess performance
+for (i in 1:6) { 
+  model <- lm(y ~ poly(x, degree = i, raw = TRUE))
+  MSE <- mean(model$residuals^2)
+  cat("The MSE of polynomial model degree ",i," is:", MSE, "\n")
+}
+```
+
+The polynomial with degree 6 seems to work the best as it has the lowest MSE:
+The reason I chose to evaluate the model with MSE is because it takes into account the sample size so we find the average difference between label and prediction of each sample.
+
+\section*{2.)}
+```{r}
+#Degree 1 LOESS span: 0.25 to 0.75
+#Similarly iterate through spans of .25 to .75 and print MSE for performance
+for (i in seq(.25, .75, by = 0.05)) {
+  output = myloess(x, y, span = i, degree = 1, show.plot = FALSE)
+  MSE <- output$MSE
+  cat("The MSE of myloess model degree 1, span ",i," is:", MSE, "\n")
+}
+
+```
+Based on the SSE, the three best degree = 1, fits is: model span 0.25, 0.3, 0.5 as they have the lowest SSE.
+
+Plotting the three models that I deemed the best fit:
+```{r, fig.height=5, fig.width=8, fig.show='hold'}
+best_spans <- c(0.25, 0.3, 0.5)
+
+#Display the plots for the spans we deemed have the best performance
+for (span in best_spans) {
+  myloess(x, y, span = span, degree = 1, show.plot = TRUE)
+}
+```
+
+```{r}
+#Degree 2 LOESS span: 0.25 to 0.75
+#Now iterate through spans .25 to .75 with degree 2
+for (i in seq(.25, .75, by = 0.05)) {
+  output = myloess(x, y, span = i, degree = 2, show.plot = FALSE)
+  MSE <- output$MSE 
+  cat("The MSE of myloess model  degree 2, span ",i," is:", MSE, "\n")
+}
+```
+I see that for degree 2 the model with best fits come from span = 0.3, 0.35, 0.25 based on the lowest SSE
+
+Plotting the 3 models with the best fit:
+```{r, fig.height=5, fig.width=8, fig.show='hold'}
+best_spans_d2 <- c(0.3, 0.35, 0.25)
+for (span in best_spans_d2){
+  output = myloess(x, y, span = span, degree = 2, show.plot = TRUE)
+}
+```
+
+Visually inspecting the plots for Degree = 2 it's not as evident if the plots are overfitting. This is likely due to the model is using a quadratic regression which polynomial which already provides a more curved relationship introducing therefore the span has less of an impact on smoothing the data. 
+
+Visually inspecting the plots for Degree = 1 based on a linear regression, I can see that the smaller span = .25, the model does provide a better fit but may be overfitting to the trends in the data. Compared to span = .5 the model has a much more general upward trend that may have better performance when applied on unseen data. The smaller span leads to each prediction being more sensitive to data around it, whereas a larger span smooths out these variations by providing a more general prediction.
+
+
+\section*{3.)}
+
+Here I compare the results using the built in loess() function.
+Analyzing the outputs we got from myloess() degree = 1, I can see that the MSE is different but follows a smiliar upward trend of the MSE. However, in the built in loess() function, I can see each increase in span increases the MSE which isn't always the case in my custom myloess() function.
+```{r}
+
+for (i in seq(.25, .75, by = 0.05)) {
+  output = loess(y ~ x, span = i, degree = 1, show.plot = FALSE)
+  
+  MSE <- mean(output$residuals^2)
+
+  #Display the MSE
+  cat("The MSE of loess model span ",i," is:", MSE, "\n")
+  }
+
+```
+While .25, .3, .35 are the span values leading to lowest MSE, I will still plot .25, .3, .5 span values corresponding to the myloess() plot for a better visual comparison.
+```{r, fig.height=5, fig.width=8, fig.show='hold'}
+span_values <- c(0.25, 0.3, 0.5) #Designate specific span values
+
+df <- data.frame(x = x, y = y) #Use a dataframe to store x and y values
+
+for (i in span_values) {
+  loess_fit <- loess(y ~ x, span = i, degree = 1)  # Fit the loess model
+  fitted_values <- predict(loess_fit)  #Make our predictions
+  
+  # Create a plot for each span value
+  plot <- ggplot(df, aes(x = x, y = y)) +
+    geom_point(color = "blue") +  # Original points
+    geom_line(aes(y = fitted_values), color = "red", linewidth = 1) +
+    labs(title = paste("Loess Fit with Span =", i), x = "X", y = "Y") +
+    theme_minimal()
+  
+  print(plot)
+}
+
+
+```
+Analyzing the plots the built in loess function, when dealing with a smaller span, has a lot more variation, similar to that in myloess() function of degree 2. This is likely what's causing the lower MSE in the built in loess() function, as it's overfitting to the data. However as the span increases we can quickly see a smoothing of the fitted line as it creates a more generalized fit, which results in a similar plot as myloess() when the span = 0.5
+
+\section*{Problem 2}
+```{r}
+library(MASS)
+data("mcycle")
+
+ggplot(mcycle, aes(x = times, y = accel)) + theme_bw() + geom_point()
+```
+\subsection*{1.)}
+
+```{r}
+#Extract the x and the y values
+x = mcycle$times
+y = mcycle$accel
+```
+
+
+Fit myloess() with the mcycle dataset using degree 1 with spans from .25 - .75
+```{r}
+#Degree 1 LOESS span: 0.25 to 0.75
+for (i in seq(.25, .75, by = 0.05)) {
+  output = myloess(x, y, span = i, degree = 1, show.plot = FALSE)
+  model_rss <- sum(output$SSE)
+  MSE <- model_rss/n
+  cat("The MSE of myloess model degree 1, span ",i," is:", MSE, "\n")
+}
+
+```
+Looking at the MSE, span 0.25, 0.3, 0.35 has the lowest MSE thus I deem these 3 fits the best. 
+
+Let's plot these fits to see what they look like
+```{r, fig.height=5, fig.width=8, fig.show='hold'}
+best_spans_d1 <- c(0.25, 0.3, 0.35)
+for (span in best_spans_d2){
+  output = myloess(x, y, span = span, degree = 1, show.plot = TRUE)
+}
+```
+As we can see, all three spans in the plot does not capture enough curvature in the data. Let's try using degree = 2 to perhaps get better results.
+
+```{r}
+#Degree 2 LOESS span: 0.25 to 0.75
+for (i in seq(.25, .75, by = 0.05)) {
+  output = myloess(x, y, span = i, degree = 2, show.plot = FALSE)
+  MSE <- output$MSE
+  cat("The MSE of myloess model degree 2, span ",i," is:", MSE, "\n")
+}
+```
+Our MSE has dropped drastically, again the best fits being 0.25, 0.3, 0.35
+Let's plot these 3 best fits to compare with our plots from degree = 2
+
+```{r, fig.height=5, fig.width=8, fig.show='hold'}
+best_spans_d2 <- c(0.25, 0.3, 0.35)
+for (span in best_spans_d2){
+  output = myloess(x, y, span = span, degree = 2, show.plot = TRUE)
+}
+```
+We can see we get a much better fit with much more curvature in the regression line. This is due to using a quadratic regression thus introduces a more flexible shape that captures the curvature in the data. 
+
+\subsection*{2.)}
+
+
+```{r}
+#Using the built in loess function
+for (i in seq(.25, .75, by = 0.05)) {
+  output = loess(y ~ x, span = i, degree = 1, show.plot = FALSE)
+  
+  MSE <- mean(output$residuals^2)
+
+  # Calculate the MSE
+
+  cat("The MSE of loess model span ",i," is:", MSE, "\n")
+  }
+
+```
+The built in loess() function still has consistently lower MSE thus providing a better fit especially considering degree = 1. Let's plot the 3 best fits (span = 0.25, 0.3, 0.35) of degree 1 for comparison and to get a visualization.
+```{r, fig.height=5, fig.width=8, fig.show='hold'}
+span_values <- c(0.25, 0.3, 0.35) #Designate specific span values
+
+df <- data.frame(x = x, y = y) #Use a dataframe to store x and y values
+
+for (i in span_values) {
+  loess_fit <- loess(y ~ x, span = i, degree = 1)  # Fit the loess model
+  fitted_values <- predict(loess_fit)  #Make our predictions
+  
+  # Create a plot for each span value
+  plot <- ggplot(df, aes(x = x, y = y)) +
+    geom_point(color = "blue") +  # Original points
+    geom_line(aes(y = fitted_values), color = "red", size = 1) +
+    labs(title = paste("Loess Fit with Span =", i), x = "X", y = "Y") +
+    theme_minimal()
+  
+  print(plot)
+}
+
+
+```
+Next let's see how well the loess() function performs when degree = 2
+
+```{r}
+
+for (i in seq(.25, .75, by = 0.05)) {
+  output = loess(y ~ x, span = i, degree = 2, show.plot = FALSE)
+  
+  MSE <- mean(output$residuals^2)
+
+  # Calculate the MSE
+
+  cat("The MSE of loess model span ",i," is:", MSE, "\n")
+  }
+
+```
+It provides a even better fit with a lower MSE. Let's look at the plots
+```{r, fig.height=5, fig.width=8, fig.show='hold'}
+span_values <- c(0.25, 0.3, 0.35) #Designate specific span values
+
+df <- data.frame(x = x, y = y) #Use a dataframe to store x and y values
+
+for (i in span_values) {
+  loess_fit <- loess(y ~ x, span = i, degree = 2)  # Fit the loess model
+  fitted_values <- predict(loess_fit)  #Make our predictions
+  
+  # Create a plot for each span value
+  plot <- ggplot(df, aes(x = x, y = y)) +
+    geom_point(color = "blue") +  # Original points
+    geom_line(aes(y = fitted_values), color = "red", size = 1) +
+    labs(title = paste("Loess Fit with Span =", i), x = "X", y = "Y") +
+    theme_minimal()
+  
+  print(plot)
+}
+
+
+```
+When degree = 2 the graph displays deeper troughs and higher peaks, likely due to the more flexible regression model thus allowing for more variation. 
+However, I notice that values of X from 0 :approx 15, the loess model's line passes right through the data whereas my custom myloess() is offset and gets worse as the span increases. This is causing the higher MSE in myloess() predictions. 
+
+# Part 2
+Implementing a distance-weighted KNN
+
+```{r}
+
+mykNN <- function(train, test, y_train, y_test, k = 3, weighted = TRUE) {
+
+ 
+
+  n_test <- nrow(test) 
+
+  n_train <- nrow(train) 
+
+ 
+
+  # Vectorized computation of pairwise Euclidean distances
+
+  distance_matrix <- as.matrix(dist(rbind(train, test)))
+
+  train_test_distances <- distance_matrix[1:n_train, (n_train + 1):(n_train + n_test)]
+
+ 
+
+  # Initialize yhat as a numeric vector
+
+  yhat <- numeric(n_test) 
+
+ 
+
+  # Loop through each test point
+
+  for (i in 1:n_test) {
+
+    test_distances <- train_test_distances[, i]
+
+ 
+
+    neighbors <- order(test_distances)[1:k]
+
+    neighbor_distances <- test_distances[neighbors] 
+
+    neighbor_y <- y_train[neighbors] 
+
+ 
+
+    # weighted kNN
+
+    if (weighted) {
+
+      # Add .Machine$double.eps to prevent division by zero
+
+      weights <- 1 / (neighbor_distances + .Machine$double.eps)
+
+      weights[is.infinite(weights)] <- 0  # Handle zero distance by assigning 0 weights.
+
+ 
+
+      if (is.factor(y_train)) {
+
+        # Classification
+
+        weighted_votes <- tapply(weights, neighbor_y, sum)
+
+        yhat[i] <- names(which.max(weighted_votes))  # Class with the highest weighted votes
+
+      } else {
+
+        # Regression: Weighted average of neighbor responses
+
+        yhat[i] <- sum(weights * neighbor_y) / sum(weights)
+
+      }
+
+    } else {
+
+      # unweighted kNN
+
+      if (is.factor(y_train)) {
+
+        # Classification: Majority vote
+
+        yhat[i] <- names(sort(table(neighbor_y), decreasing = TRUE))[1]
+
+      } else {
+
+        # Regression: Mean of neighbor responses
+
+        yhat[i] <- mean(neighbor_y)
+
+      }
+
+    }
+
+  }
+
+ 
+
+  # Classification
+
+  if (is.factor(y_train)) {
+
+    accuracy <- sum(yhat == y_test) / length(y_test)  # Calculate accuracy
+
+    error_rate <- 1 - accuracy
+
+    confusion_matrix <- table(yhat, y_test)  # Confusion matrix
+
+ 
+
+    return(list(yhat = yhat, accuracy = accuracy, error_rate = error_rate, confusion_matrix = confusion_matrix, k = k))
+
+  }
+
+  else {
+
+    # Regression
+
+    residuals <- y_test - yhat 
+
+    SSE <- sum(residuals^2)           
+
+    MSE <- SSE / length(y_test) 
+
+    RMSE <- sqrt(MSE) 
+
+ 
+
+    return(list(yhat = yhat, residuals = residuals, SSE = SSE, MSE = MSE, RMSE = RMSE, k = k, n_points = length(y_test)))
+
+  }
+
+}
+
+```
+
+## Problem 3
+
+ 
+
+```{r}
+
+# Some pre-processing
+library(ISLR)
+
+# Remove the name of the car model and change the origin to categorical with actual name
+
+Auto_new <- Auto[, -9]
+
+# Lookup table
+
+newOrigin <- c("USA", "European", "Japanese")
+
+Auto_new$origin <- factor(newOrigin[Auto_new$origin], newOrigin)
+
+ 
+
+# Look at the first 6 observations to see the final version
+
+head(Auto_new)
+
+```
+
+ 
+
+```{r}
+
+# Set seed for reproducibility
+
+set.seed(123)
+
+ 
+
+# Split the data (70% training, 30% testing)
+
+train_indices <- sample(1:nrow(Auto_new), 0.7 * nrow(Auto_new))
+
+train_data <- Auto_new[train_indices, ]
+
+test_data <- Auto_new[-train_indices, ]
+
+ 
+
+# Separate features (X) and target (Y)
+
+train_x <- train_data[, -8] 
+
+test_x <- test_data[, -8]   
+
+train_y <- train_data$origin
+
+test_y <- test_data$origin   
+
+ 
+
+```
+
+ 
+
+ 
+
+```{r}
+
+library(knitr)
+
+k_values <- c(1, 3, 5, 7, 10)
+
+results_knn <- data.frame(k = k_values, accuracy_regular = numeric(length(k_values)), accuracy_weighted = numeric(length(k_values)))
+
+ 
+
+#Accuracy
+
+for (k in k_values) {
+
+  # Regular kNN
+
+  result_regular <- mykNN(train_x, test_x, train_y, test_y, k = k, weighted = FALSE)
+
+  results_knn[results_knn$k == k, "accuracy_regular"] <- result_regular$accuracy
+
+  # Distance-weighted kNN
+
+  result_weighted <- mykNN(train_x, test_x, train_y, test_y, k = k, weighted = TRUE)
+
+  results_knn[results_knn$k == k, "accuracy_weighted"] <- result_weighted$accuracy
+
+}
+
+ 
+
+# Table
+
+kable(results_knn, col.names = c("k", "Accuracy (Regular kNN)", "Accuracy (Weighted kNN)"), caption = "Accuracy for Regular and Weighted kNN")
+
+ 
+
+```
+
+ 
+
+```{r}
+
+library(ggplot2)
+
+# Plot accuracy vs k
+
+ggplot(results_knn, aes(x = k)) +
+
+  geom_line(aes(y = accuracy_regular, color = "Regular kNN"), size = 1) +   # Line for regular kNN
+
+  geom_line(aes(y = accuracy_weighted, color = "Weighted kNN"), size = 1) + # Line for weighted kNN
+
+  labs(title = "Accuracy vs. k", x = "k", y = "Accuracy") +                # Labels
+
+  scale_color_manual(values = c("Regular kNN" = "blue", "Weighted kNN" = "red")) + # Colors
+
+  theme_minimal()
+
+ 
+
+```
+
+ 
+
+```{r}
+
+#Confusion matrixes
+
+best_k <- 1
+
+# Regular kNN with k = 1
+
+best_regular_knn <- mykNN(train_x, test_x, train_y, test_y, k = best_k, weighted = FALSE)
+
+cat("Confusion Matrix for Regular kNN with k =", best_k, ":\n")
+
+print(best_regular_knn$confusion_matrix)
+
+cat("Accuracy for Regular kNN with k =", best_k, ":", best_regular_knn$accuracy, "\n")
+
+ 
+
+# Weighted kNN with k = 1
+
+best_weighted_knn <- mykNN(train_x, test_x, train_y, test_y, k = best_k, weighted = TRUE)
+
+cat("\nConfusion Matrix for Weighted kNN with k =", best_k, ":\n")
+
+print(best_weighted_knn$confusion_matrix)
+
+cat("Accuracy for Weighted kNN with k =", best_k, ":", best_weighted_knn$accuracy, "\n")
+
+ 
+
+# Weighted knn for k = 7
+
+best_k_weighted <- 7
+
+best_weighted_knn <- mykNN(train_x, test_x, train_y, test_y, k = best_k_weighted, weighted = TRUE)
+
+ 
+
+cat("\nConfusion Matrix for Weighted kNN with k =", best_k_weighted, ":\n")
+
+print(best_weighted_knn$confusion_matrix)
+
+cat("Accuracy for Weighted kNN with k =", best_k_weighted, ":", best_weighted_knn$accuracy, "\n")
+
+ 
+
+ 
+
+```
+
+### Observations:
+
+ 
+
+The confusion matrix for k = 1 for regular kNN shows the classification performance on the test set, and the accuracy is 72.88%. Regular kNN performs well with smaller values of k, but its accuracy drops when more neighbors are taken into account. This shows that  regular kNN is underfitting when more neighbors are considered, as it smooths out the classifications.
+
+ 
+
+Weighted kNN (dnkNN), benefits from weighting the influence of neighbors by distance, allowing it to maintain the 72.88% accuracy even with more neighbors (k = 7). This suggests that distance-weighted kNN is a more robust approach.
+
+ 
+
+### Plots of mpg vs weight
+
+```{r}
+
+# Plot for k = 5
+
+ggplot(train_data, aes(x = weight, y = mpg, color = origin)) +
+
+  geom_point(alpha = 0.5, shape = 21) +
+
+  geom_point(data = test_data, aes(x = weight, y = mpg), shape = 18, color = "black") +
+
+  ggtitle("MPG vs Weight with Origin for k = 5") +
+
+  theme_minimal()
+
+ 
+
+# Plot for k = 10
+
+ggplot(train_data, aes(x = weight, y = mpg, color = origin)) +
+
+  geom_point(alpha = 0.5, shape = 21) +
+
+  geom_point(data = test_data, aes(x = weight, y = mpg), shape = 18, color = "black") +
+
+  ggtitle("MPG vs Weight with Origin for k = 10") +
+
+  theme_minimal()
+
+ 
+
+```
+
+ 
+
+## Problem 4
+
+```{r}
+
+# Set seed for reproducibility
+
+set.seed(42)
+
+ 
+
+# Split the data into training and testing data (70 obs for training, 41 for testing)
+
+index <- sample(1:nrow(ozone), 70)
+
+train_data <- ozone[index, ]
+
+test_data <- ozone[-index, ]
+
+```
+
+ 
+
+ 
+
+### Part a
+
+ 
+
+```{r}
+
+# Set variables appropriately
+
+y_train <- train_data$ozone
+
+y_test <- test_data$ozone
+
+X_train <- train_data$temperature
+
+X_test <- test_data$temperature
+
+ 
+
+# k values
+
+k_values <- c(1, 3, 5, 10, 20)
+
+ 
+
+# Initialize DataFrame for results
+
+results <- data.frame()
+
+ 
+
+# Loop through k values to do dwkNN
+
+for (k in k_values) {
+
+  # Use the mykNN function to predict ozone levels
+
+  predictions <- mykNN(train = as.matrix(X_train), test = as.matrix(X_test),
+
+                       y_train = y_train, y_test = y_test, k = k, weighted = TRUE)
+
+ 
+
+  # Calculate the MSE for the predictions
+
+  MSE <- predictions$MSE
+
+ 
+
+  # Append results to the DataFrame
+
+  results <- rbind(results, data.frame(k = k, MSE = MSE))
+
+}
+
+ 
+
+# Plot training and testing data along with the fitted regression
+
+ggplot() +
+
+  geom_point(data = train_data, aes(x = temperature, y = ozone),
+
+             color = "black", size = 2) +  # Training data (black points)
+
+  geom_point(data = test_data, aes(x = temperature, y = ozone),
+
+             color = "blue", size = 2) +    # Testing data (blue points)
+
+  geom_line(data = data.frame(temperature = X_test, fitted_ozone = predictions$yhat),
+
+            aes(x = temperature, y = fitted_ozone), color = "red") + # Fitted regression line
+
+  ggtitle("Ozone vs Temperature with Distance-Weighted kNN Fitting") +
+
+  theme_minimal() +
+
+  labs(x = "Temperature", y = "Ozone Level")
+
+ 
+
+# Display the results in a table using kable
+
+kable(results, col.names = c("k", "MSE"),
+
+      caption = "MSE for Different k values in dwkNN (Ozone ~ Temp)")
+
+```
+
+From the table, we can see that the best number of neighbors to use is k = 3, as it has the lowest MSE. This shows a decrease from k = 1, suggesting that using a small k can lead to overfitting. After k = 3, there’s a noticeable increase in MSE values, with all of them going above 1000.
+
+ 
+
+Looking at the graph, the red fitted line generally follows the data well. The data points aren’t super tightly clustered around the line, but they’re not too far off, either. There are a few outliers, particularly around a temperature of 80, where the points deviate from the fitted line. With all of this being said, there might be a other factors affecting the ozone, but the model seems to perform pretty well.
+
+ 
+
+ 
+
+### Part b
+
+ 
+
+```{r}
+
+# Set variables appropriately
+
+y_train <- train_data$ozone
+
+y_test <- test_data$ozone
+
+X_train <- train_data[, -which(names(train_data) == "ozone")]
+
+X_test <- test_data[, -which(names(test_data) == "ozone")]
+
+ 
+
+# Initialize DataFrame for results
+
+results2 <- data.frame()
+
+ 
+
+# dwkNN for k = 1, ..., 20
+
+for (k in 1:20) {
+
+  predictions <- mykNN(train = as.matrix(X_train), test = as.matrix(X_test),
+
+                       y_train = y_train, y_test = y_test, k = k, weighted = TRUE)
+
+ 
+
+  # Get MSE
+
+  MSE <- predictions$MSE
+
+ 
+
+  # Append results
+
+  results2 <- rbind(results2, data.frame(k = k, MSE = MSE))
+
+}
+
+ 
+
+# Plot MSE vs k
+
+ggplot(results2, aes(x = k, y = MSE)) +
+
+  geom_point() +
+
+  geom_line() +
+
+  theme_bw() +
+
+  labs(title = "MSE vs k",
+
+       x = "k",
+
+       y = "MSE")
+
+```
+
+From looking at the graph, we see that as k increases, MSE initially increases. It then hits its absolute minimum value when k = 3 before starting to increase and then hitting a second local minimum when k = 6. Then, MSE increases for the next 2 k values, and staggers after that, with the MSE for each increasing k value being relatively similar to the last. Since our absolute minimum MSE value is when k = 3, we should use 3 nearest neighbors to have the best accuracy for our model. The next best option, and a very similar one regarding its MSE, would be k = 6.
