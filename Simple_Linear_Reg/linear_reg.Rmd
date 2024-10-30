@@ -1,0 +1,850 @@
+---
+html_document:
+  df_print: paged
+author: "Theodore Li"
+date: "10/30/2024"
+output:
+  pdf_document:
+     latex_engine: xelatex
+     highlight: haddock
+  html_document:
+    df_print: paged
+subtitle: 
+keep_tex: false
+number_sections: false
+title: "Implementing a custom Linear Regression function"
+geometry: margin = 0.5in
+header-includes:
+- \usepackage{booktabs}
+- \usepackage{longtable}
+- \usepackage{array}
+- \usepackage{multirow}
+- \usepackage{wrapfig}
+- \usepackage{float}
+- \usepackage{colortbl}
+- \usepackage{pdflscape}
+- \usepackage{tabu}
+- \usepackage{threeparttable}
+- \usepackage{threeparttablex}
+- \usepackage[normalem]{ulem}
+- \usepackage{makecell}
+- \usepackage{xcolor}
+editor_options:
+  chunk_output_type: inline
+documentclass: article
+urlcolor: blue
+---
+  
+<!-- The above is set to automatically compile to a .pdf file.   -->
+<!-- It will only succeed if LaTeX is installed. -->
+
+
+```{r setup, , include=FALSE}
+# This is the setup chunk
+#  Here you can set global options for the entire document
+
+library(knitr) # I recommend doing this here
+library(ggplot2)
+
+
+# Although you can call functions from a library using the following notation
+#  without loading the entire library.
+ knitr::opts_chunk$set(echo = TRUE, 
+                       comment = NA, # Required
+                       fig.path = "./figures/",  # Store all figures here in relative path (make the folder first)
+                      fig.align = "center",
+                      fig.width = 7,
+                      fig.height = 7,
+                       message = FALSE, # Turn off load messages
+                       warning = FALSE # Turn off warnings
+                       )
+
+```
+
+\section*{Part 1.)}
+
+Creating custom mylm() function using matrix multiplication
+```{r, tidy=TRUE, tidy.opts=list(width.cutoff=100)}
+library(ggplot2)
+
+mylm <- function(y, x, method = "qr", interval = "confidence", level = 0.95, plot = TRUE){
+  #Compute least squares coefficient using matrix algebra
+  
+  #Placeholder values for Qmat and Rmat if we don't use qr decomposition
+  Qmat <- 0
+  Rmat <- 0
+  #Combines a column of 1s used as a intercept term
+  x <- cbind(1, x)
+  xtx_inv <- solve(t(x) %*% x)  # Compute (X^T X)^(-1)
+  if (method == "inverse") {
+    # Solve using the normal equation: betahat = (X^T X)^(-1) X^T Y
+    betahat <- xtx_inv %*% t(x) %*% y  # Compute beta
+  } 
+  
+  # Solve using QR decomposition
+  else if (method == "qr") {
+    QR_decomp <- qr(x)  # QR decomposition of X
+    Qmat <- qr.Q(QR_decomp) #Extracting the Q matrix
+    Rmat <- qr.R(QR_decomp) #Extracting the R matrix
+    
+    betahat <- backsolve(Rmat, t(Qmat) %*% y) #Using backsolve to find betahat
+  }
+  
+  residuals = y - x %*% betahat
+  
+  fitted.values = x %*% betahat
+  
+  #ybar is the average of the observed output
+  ybar <- mean(y)
+  
+  
+  #Calculating the variance among predicted values
+  mean_fitted <- mean(fitted.values) #Average predicted value
+  n <- (nrow(x)) #Number of values
+  p <- (ncol(x)) #Number of predictors
+  df <- n - p #degrees of freedom
+  sigmahat <- sum((fitted.values - mean_fitted)^2) / df
+
+# ~~~~~~~~~~~~~ Creating a Estimate table
+  
+
+  
+  SE_betahat <- sqrt(sigmahat * diag(xtx_inv))
+  #SE_betahat <- sigmahat * sqrt(xtx_inv)
+  
+  
+  #t -statistics for betahat
+  
+  t_statistics <- betahat / SE_betahat
+  
+  # p values for a two tailed test
+  p_values <- 2 * pt(-abs(t_statistics), df = n - p)
+
+  #Create a searchable Estimate table to display the previous calculated values
+  EstimateTab <- data.frame(
+    Label = paste0("beta_", 0:(length(betahat) - 1)),  # Add the Label first
+    Coefficient = as.vector(betahat),
+    StdError = as.vector(SE_betahat),
+    tStatistic = as.vector(t_statistics),
+    pValue = as.vector(p_values)
+  )
+
+  
+# ~~~~~~~~~~~~~~ Calculating CI/PI of fitted values
+  alpha <- 1 - level #Significance level
+
+  x_pred <- x[,2] #Get the second column, the predictor
+  s_x2 <- var(x_pred) #Variance of the input predictors 
+  x_mean <- mean(x_pred) #Mean of the input predictors
+  t_value <- qt(1 - alpha/2, df) #T value for fitted value CI/PI
+  
+  if ( interval == "none"){
+    intervals <- data.frame(
+      Observed = y,
+      Fitted = fitted.values
+    )
+  } else if (interval == "confidence"){
+    
+    #SE confidence of the fitted values: derived from slide 40 of lecture 8
+    se_conf <- sigmahat * sqrt(1/n + (x_pred - x_mean)^2 / as.numeric(((n - 1) * s_x2)))
+    
+    t_value <- qt(1 - alpha/2, df) #For two tailed lb and ub
+    lower_bound_CI <- fitted.values - t_value * se_conf
+    upper_bound_CI <- fitted.values + t_value * se_conf
+    
+    #Update out intervals data frame with Confidence Intervals
+    intervals <- data.frame(
+      Observed = y,
+      fit = fitted.values,
+      CI_LB = lower_bound_CI,
+      CI_UB = upper_bound_CI
+    )
+  } else if (interval == "prediction"){
+    
+    #SE prediction of the fitted values: derived from slide 43 of lecture 8
+    se_pred <- sigmahat * sqrt(1 + 1/n + (x_pred - x_mean)^2 / as.numeric(((n - 1) * s_x2)))
+
+
+    t_value <- qt(1 - alpha/2, df) #For two tailed lb and ub
+    lower_bound_PI <- fitted.values - t_value * se_pred
+    upper_bound_PI <- fitted.values + t_value * se_pred
+    
+    #Update our intervals data frame with Prediction Intervals
+    intervals <- data.frame(
+      Observed = y,
+      fit = fitted.values,
+      PI_LB = lower_bound_PI,
+      PI_UB = upper_bound_PI
+    )
+  } else {
+    se_conf <- sigmahat * sqrt(1/n + (x_pred - x_mean)^2 / as.numeric(((n - 1) * s_x2)))
+    se_pred <- sigmahat * sqrt(1 + 1/n + (x_pred - x_mean)^2 / as.numeric(((n - 1) * s_x2)))
+    
+    t_value <- qt(1 - alpha/2, df) #For two tailed lb and ub
+    lower_bound_PI <- fitted.values - t_value * se_pred
+    upper_bound_PI <- fitted.values + t_value * se_pred
+    lower_bound_CI <- fitted.values - t_value * se_conf
+    upper_bound_CI <- fitted.values + t_value * se_conf
+    
+    #Combine Confidence and Prediction intervals into our dataframe
+    intervals <- data.frame(
+      Observed = y,
+      fit = fitted.values,
+      CI_LB = lower_bound_CI,
+      CI_UB = upper_bound_CI,
+      PI_LB = lower_bound_PI,
+      PI_UB = upper_bound_PI
+    )
+
+  }
+
+  # ~~~~~~~~~~~~~~~ Creating ANOVA table
+  
+  
+  #Despite calculating these values above, 
+  #I computed it again with matrix algebra following the formula from slide 72
+  
+  SS_regr <- as.numeric(t(betahat) %*% t(x) %*% x %*% betahat - n*ybar^2)
+  
+  
+  SS_residual <- as.numeric(t(y - x %*% betahat) %*% (y - x %*% betahat))
+  SS_total <- as.numeric( t(y) %*% y - n*ybar^2)
+  
+  MSR <- SS_regr / p #Mean Squared Residuals
+  MSE <- SS_residual / (n - p - 1) #Calculating Mean Squared Error
+  
+  F_stat <- MSR / MSE #Calculating F statistic
+  
+  #Calculating the P value
+  p_value <-  pf(F_stat, p, n - p - 1, lower.tail = FALSE)
+  
+  #Putting all callculated values above together into a table:
+  AOVtab <- data.frame(
+  Source = c("Regression", "Residual", "Total"),
+  df = c(p, n - p - 1, n - 1),
+  SS = c(SS_regr, SS_residual, SS_total), 
+  MS = c(MSR, MSE, NA),
+  F = c(F_stat, NA, NA),
+  `P-value` = c(p_value, NA, NA)
+)
+  #Using the ANOVA table to calculate R squared
+  Rsquared <- SS_regr/SS_total
+  
+  
+# ~~~~~~~~~~~~~~ Calculating CI's of coefficients
+
+    t_value <- qt(1 - alpha/2, n-p-1) #T value for coefficient CI
+    #LB and UB formulas from slide 70 lecture 8
+    sigma_squared <- MSE
+    beta_CI_LB <- betahat - t_value * sqrt(sigma_squared * diag(xtx_inv))
+    beta_CI_UB <- betahat + t_value * sqrt(sigma_squared * diag(xtx_inv))
+
+    estimateCIs <- data.frame(
+      Label = paste0("beta_", 0:(length(betahat) - 1)),  # Add the Label first
+      Coefficients = betahat,
+      CI_LB = beta_CI_LB,
+      CI_UB = beta_CI_UB
+    )
+
+
+  # ~~~~~~~~~~~~~~~~~~~ Plotting the data
+  
+  # Plot the data and the regression line
+fitted.values <- as.vector(fitted.values)  # Convert to a numeric vector
+y <- as.vector(y)
+
+
+plot_data <- data.frame(
+  x = x[,2],
+  y = y, 
+  fitted.values = fitted.values
+              )
+
+
+
+  # Add confidence or prediction bands depending on the selected interval type
+if (interval == "confidence") {
+ regressionplot <- ggplot(plot_data, aes(x = x)) +
+    geom_point(aes(y = y)) +  # Plot the original data points
+      # Plot the fitted line
+    geom_line(aes(y = fitted.values, color = "Least Squares Regression Line"), show.legend = TRUE) +  
+    geom_ribbon(aes(ymin = intervals$CI_LB, ymax = intervals$CI_UB, 
+                    fill = "Confidence Interval"), 
+                alpha = 0.2) +
+    labs(title = "Scatter Plot with Regression Line and Confidence Interval", 
+         x = "X", y = "Y") +
+    scale_color_manual(values = c("Least Squares Regression Line" = "blue", "Data Points" = "black")) +
+    scale_fill_manual(values = c("Confidence Interval" = "red")) +
+    guides(color = guide_legend(title = NULL),
+           fill = guide_legend(title = NULL, 
+                               override.aes = list(alpha = 0.2))) +
+    theme(legend.position = "bottom")
+ 
+} else if (interval == "prediction") {
+   regressionplot <- ggplot(plot_data, aes(x = x)) +
+    geom_point(aes(y = y)) +  # Plot the original data points
+    geom_line(aes(y = fitted.values, color = "Least Squares Regression Line"), show.legend = TRUE) +  # Plot the fitted line
+    geom_ribbon(aes(ymin = intervals$PI_LB, ymax = intervals$PI_UB, 
+                    fill = "Prediction Interval"), 
+                alpha = 0.2) +
+    labs(title = "Scatter Plot with Regression Line and Prediction Interval", 
+         x = "X", y = "Y") +
+    scale_color_manual(values = c("Least Squares Regression Line" = "blue", "Data Points" = "black")) +
+    scale_fill_manual(values = c("Prediction Interval" = "green")) +
+    guides(color = guide_legend(title = NULL),
+           fill = guide_legend(title = NULL, 
+                               override.aes = list(alpha = 0.2))) +
+    theme(legend.position = "bottom")
+
+} else if( interval == "both"){
+  
+  
+  regressionplot <- ggplot(plot_data, aes(x = x)) +
+    geom_point(aes(y = y)) +  # Plot the original data points
+    geom_line(aes(y = fitted.values, color = "Least Squares Regression Line"), show.legend = TRUE) +  
+    geom_ribbon(aes(ymin = intervals$CI_LB, ymax = intervals$CI_UB, 
+                    fill = "Confidence Interval"), 
+                alpha = 0.2) +
+     geom_ribbon(aes(ymin = intervals$PI_LB, ymax = intervals$PI_UB, 
+                    fill = "Prediction Interval"), 
+                alpha = 0.2) +
+    labs(title = "Scatter Plot with Regression Line and Confidence Interval", 
+         x = "X", y = "Y") +
+    scale_color_manual(values = c("Least Squares Regression Line" = "blue", "Data Points" = "black")) +
+    scale_fill_manual(values = c("Confidence Interval" = "red", "Prediction Interval" = "green")) +
+    guides(color = guide_legend(title = NULL),
+           fill = guide_legend(title = NULL, 
+                               override.aes = list(alpha = 0.2))) + 
+    theme(legend.position = "bottom")
+    
+ 
+}
+
+  # The returned values are:
+  return(list("coefficients" = betahat, # The regression coefficients
+              "Q" = Qmat, # The Q matrix only if method = "qr"
+              "R" = Rmat, # The R matrix only if method = "qr"
+              "sigmahat" = sigmahat, # The estimate of sigma
+              "fitted.values" = fitted.values, # The fitted values
+              "residuals" = residuals, # The residuals
+              "Rsquared" = Rsquared, # The value of R-squared
+              "EstimateTab" = EstimateTab, # The estimate table (searchable)
+              "AOVtab" = AOVtab,  # The ANOVA Table (searchable)
+              "estimateCIs" = estimateCIs, # A table of the CIs for beta0 and beta1
+              "intervals" = intervals, # yhat with the lower & upper bounds for the CIs and/or PIs
+              "regressionplot" = regressionplot # plot of regression fit and CI/PI  bands, if requested
+              ))
+
+}
+```
+
+\section*{Problem 1.)}
+
+```{r, tidy = TRUE, tidy.opts = list(width.cutoff = 60)}
+file_path <- file_path <- list.files(pattern = "cardiologists.csv", full.names = TRUE)
+
+data <- read.csv(file_path)
+```
+
+
+```{r, tidy = TRUE, tidy.opts = list(width.cutoff = 60)}
+ggplot(data, aes(x = Short, y = Long)) +
+  geom_point() +  # Plot the original data points
+  labs(title = "Scatter Plot cardiologists", x = "short term", y = "long term") +
+  theme_minimal()
+```
+Yes, there appears to be a linear trend and thus a linear relationship is possible although not a overwhelmingly strong relationship.
+```{r, tidy = TRUE, tidy.opts = list(width.cutoff = 60)}
+x = as.matrix(data$Short)
+results <- mylm(data$Long, x, method = "inverse", interval = "both")
+Qmat <- results$Qmat
+Rmat <- results$Rmat
+sigmahat <- results$sigmahat
+fitted.values <- results$fitted.values
+residuals <- results$residuals
+Rsquared <- results$Rsquared
+EstimateTab <- results$EstimateTab
+AOVtab <- results$AOVtab
+estimateCIs <- results$estimateCIs
+intervals <- results$intervals
+regressionplot <- results$regressionplot
+
+```
+
+\subsection*{a.)}
+
+Output of the betahat vector
+```{r comment=NA}
+print(EstimateTab$Coefficient)
+
+```
+Table for 95% confidence intervals for beta vector
+```{r comment=NA}
+print(estimateCIs)
+```
+
+
+Here are all outputs of the function with QR decomposition. As you can see it matches the exact values using the inverse matrix method.
+
+Inverse Matrix Method Outputs:
+
+```{r comment=NA}
+#Fitted with QR decomposition
+qr_output = mylm(data$Long, x, method = "qr")
+
+#Display the statistics of the coefficients and a scatterplot with least squares regression line
+print(qr_output$estimateCIs)
+
+print(qr_output$regressionplot)
+```
+
+```{r comment=NA}
+#Fitted with inverse matrix method
+inverse_output = mylm(data$Long, x, method = "inverse")
+print(inverse_output$estimateCIs)
+print(inverse_output$regressionplot)
+```
+Judging from the coefficients and confidence intervals, both methods of using QR decomposition and inverse matrix reaches the same result.
+
+Equation for the fitted regression line: Y = 0.8755347	+ 0.3641873(X)
+
+
+\subsection*{b.)}
+```{r, comment=NA, tidy = TRUE, tidy.opts = list(width.cutoff = 60)}
+print(EstimateTab)
+```
+Looking at our Estimate Table we can see the coefficient for betahat_1 is positive therefore the relationship between our short term measurements and long term measurements is positive, meaning as our x values increase so does the y values.
+
+Additionally, when the short term measurement is 0, the long term measurement is 0.8755347 given by the value of beta_0
+
+c.)
+Here is a scatterplot overlayed with a least squares regression line and both confidence and prediction intervals. 
+```{r, comment=NA, tidy = TRUE, tidy.opts = list(width.cutoff = 60)}
+print(regressionplot)
+```
+
+d.)
+```{r,comment=NA, tidy = TRUE, tidy.opts = list(width.cutoff = 60)}
+print(AOVtab)
+print(Rsquared)
+```
+The Rsquared value is: 0.2421799 which is the ratio of SSR/SST:
+variation in Y explained by our regression Line / total variation in Y
+Thus 24.21799% of variation in Y is explained in our linear regression model.
+
+\section*{Problem 2}
+a.)
+First, importing the dataset
+```{r}
+file_path <- file_path <- list.files(pattern = "chemical.csv", full.names = TRUE)
+
+chemical_data <- read.csv(file_path)
+```
+
+```{r comment=NA}
+head(chemical_data)
+```
+Getting a visual scatterplot of the chemical dataset
+```{r, tidy = TRUE, tidy.opts = list(width.cutoff = 60)}
+ggplot(chemical_data, aes(x = Temp, y = Yield)) +
+  geom_point() +  # Plot the original data points
+  labs(title = "Scatter Plot temperature to yield", x = "Temperature", y = "Yield") +
+  theme_minimal()
+
+```
+2a.) Fitting the chemical data to mylm function
+```{r}
+x = as.matrix(chemical_data$Temp)
+results <- mylm(chemical_data$Yield, x, method = "inverse")
+Qmat <- results$Qmat
+Rmat <- results$Rmat
+sigmahat <- results$sigmahat
+fitted.values <- results$fitted.values
+residuals <- results$residuals
+Rsquared <- results$Rsquared
+EstimateTab <- results$EstimateTab
+AOVtab <- results$AOVtab
+estimateCIs <- results$estimateCIs
+intervals <- results$intervals
+regressionplot <- results$regressionplot
+```
+
+```{r comment=NA}
+print(regressionplot)
+```
+
+```{r comment=NA}
+print(Rsquared)
+print(mean(residuals))
+```
+Looking at the graph we can see a very close match between the least regression line and the points.
+
+The R-squared value is 0.8737721 meaning our model explains 87.37721% of the total variance in the yield. 
+
+Additionally the mean of the residuals is 5.995204e-15 which is incredibly low meaning the real data points deviates minimally from our least squares regression line.
+
+Therefore, looking at this plot and its test statistics, it seems to follow a linear regression model pretty well thus a linear model is appropriate for this data.
+
+\subsection*{2b.)}
+A violation of the SLR (Simple Linear Regression) is the observations not being independent. The observations are done in order meaning there is a time dependency.
+
+A proposition would be to have the order conducted as another predictor variable. Therefore the model takes into account when the data point was conducted and can make adjustments accordingly. 
+
+Let us get a residual plot to find any potential problems:
+```{r, comment=NA, tidy = TRUE, tidy.opts = list(width.cutoff = 60)}
+#Organize the fitted.values and residuals into a dataframe
+residual_data <- data.frame(
+  fitted = fitted.values,
+  residuals = residuals
+)
+
+# Create the residual plot
+residual_plot <- ggplot(residual_data, aes(x = fitted, y = residuals)) +
+  geom_point() +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(x = "Fitted values",
+       y = "Residuals",
+       title = "Residuals vs Fitted Values on chemical data") +
+  theme_minimal()
+print(residual_plot)
+```
+We see a apparent trend that the smaller fitted values have really small residuals and as the fitted values grow, the residual values grow dramatically. Therefore we can confirm that the assumption of the linear model does not hold. 
+
+\section*{Problem 3.)}
+\subsection*{a.)}
+First import the data:
+```{r}
+file_path <- file_path <- list.files(pattern = "myanimals.csv", full.names = TRUE)
+
+animal_data <- read.csv(file_path)
+```
+
+```{r comment=NA}
+head(animal_data)
+```
+Fit the model with body weight as predictor and brain weight as prediction.
+```{r comment=NA}
+animal_model <- lm(brain ~ body, data=animal_data)
+```
+
+Make a scatterplot to visualize the data
+```{r, comment=NA, tidy = TRUE, tidy.opts = list(width.cutoff = 60)}
+ggplot(animal_data, aes(x = body, y = brain)) +
+  geom_point() +  # Add scatter points
+  geom_smooth(method = "lm", se = FALSE, color = "blue") +  
+  # Add regression line with confidence interval
+  labs(
+       x = "body weight",
+       y = "brain weight") +
+  theme_minimal()
+```
+```{r comment=NA}
+animal_model_stats <- summary(animal_model)
+print(animal_model_stats)
+```
+
+Print out a residual plot to see any trends.
+```{r comment=NA}
+plot(fitted(animal_model), residuals(animal_model),
+     xlab = "Fitted values",
+     ylab = "Residuals",
+     main = "Residuals vs Fitted on animal data")
+abline(h = 0, lty = 2)  # Add a horizontal line at y = 0
+```
+There doesn't appear to be any curves thus, suggesting that the assumptions of the linear model holds. 
+So while no assumption of the linear model is broken, the model does not fit to the data well looking at the summary statistics.
+
+With .5% of variance in the predictions being explained in our model.
+
+A P value of .47732 strongly implies that we cannot reject the null hypothesis of the coefficient beta1 being 0. 
+
+We must transform this data to fit a linear regression model better.
+
+\subsection*{b.)}
+I noticed a lot of the data points are clustered near the center (0, 0). Thus a potential transformation would be to use Log(brain weight) against the Log(body weight).
+
+The reason I would like to use the Log transformation is that I see a lot of outliers far into the y and x axis. Therefore using this transformation I am able to get a better spread of data throughout both x and y axis. 
+
+\subsection*{c.)}
+
+Fit the model to the log of the prediction values, the brain weight
+```{r comment=NA}
+Log_animal_model <- lm(log(brain) ~ log(body), data=animal_data)
+```
+
+Make a new prediction on the body of a animal being 4kg
+```{r, comment=NA, tidy = TRUE, tidy.opts = list(width.cutoff = 60)}
+new_data <- data.frame(body = 4)
+
+log_predictions <- predict(Log_animal_model, newdata = new_data, interval = "prediction", level = 0.95)
+predictions <- exp(log_predictions) #Since the outputted predictions are in log form we will need to convert it back to its original values
+print(predictions)
+```
+The predicted outputted for brain being 4kg is 21.92687. The lower bound of the 95% prediction interval is 2.42684 kg, and the upper bound of the 95% prediction interval is 198.1126 kg.
+
+\subsection*{d.)}
+
+Now to see the statistics of whether or not our transformation worked.
+```{r comment=NA}
+log_model_stats <- summary(Log_animal_model)
+print(log_model_stats)
+```
+P value is well below < .05, our significance level, therefore we can reject the null hypothesis of the coefficients being 0, meaning there is a linear relation. 
+
+R-squared is .8 meaning 80% of the variance in the predictions can be explained in our model. Significantly improving upon the original statistics.
+
+Now to visualize these improvements.
+```{r, comment=NA, tidy = TRUE, tidy.opts = list(width.cutoff = 60)}
+ggplot(animal_data, aes(x = body, y = brain)) +
+  geom_point() +  # Add scatter points
+  geom_smooth(method = "lm", se = TRUE, color = "blue") +  # Add regression line with confidence interval
+  scale_y_log10() +  # This transforms the y-axis to log scale
+  scale_x_log10()+
+  labs(title = "Log(Brain) weight vs Body weight",
+       x = "LOG(body weight)",
+       y = "LOG(brain weight)") +
+  theme_minimal()
+```
+
+Clearly, there is a much stronger linear relationship than the figure before this. Now let's plot the residuals to see if there are any trends hinting against a linear relationship still.
+
+```{r comment=NA}
+plot_data <- data.frame(
+  fitted = fitted(Log_animal_model),
+  residuals = residuals(Log_animal_model)
+)
+
+# Create the correct residual plot
+ggplot(plot_data, aes(x = fitted, y = residuals)) +
+  geom_point() +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(x = "Fitted values (predicted log(brain))", 
+       y = "Residuals",
+       title = "Residual Plot") +
+  theme_minimal()
+```
+Unfortunately there still appears to be a trend, thus still not a entirely linear relationship.
+
+Specifically, the larger the fitted value the more variance there is in its residuals. Furthermore, once we reach past 7.5 (log scale) of the fitted values, the residuals dip heavily in the negative direction.
+
+Looking at the scatterplot of Log(Brain weight) vs Log(body weight), we see the potential problems in its outliers. 
+The outliers shouldn't be deleted as their existence can't be ignored.
+Thus I believe that  my next step would be to fit a polynomial regression rather than a linear regression to the model which potentially could capture a nonlinear relationship in the data. Specifically I would try adding the quadratic term (log(body weight)^2) to our model and see how that fits. 
+
+\section*{Problem 4}
+
+Import the data
+```{r comment=NA}
+file_path <- list.files(pattern = "nonlinear_data.csv", full.names = TRUE)
+nonlinear_data <- read.csv(file_path)
+```
+
+```{r comment=NA}
+head(nonlinear_data)
+```
+\subsection*{a.)}
+Fitting a simple linear regression fit, one for Y1 ~ X1 another for Y2 ~ X2
+```{r comment=NA}
+lr_model_1 <- lm(Y1 ~ X1, data = nonlinear_data)
+lr_model_2 <- lm(Y2 ~ X2, data = nonlinear_data)
+```
+
+View the test statistics of both models
+```{r comment=NA}
+model_1_stats <- summary(lr_model_1)
+model_2_stats <- summary(lr_model_2)
+print(model_1_stats)
+print(model_2_stats)
+```
+Now to plot the data:
+```{r comment=NA}
+ggplot(nonlinear_data, aes(x = X1, y = Y1)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, color = "red") +
+  labs(title = "Y1 vs X1", x = "X1", y = "Y1")
+```
+```{r comment=NA}
+ggplot(nonlinear_data, aes(x = X2, y = Y2)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, color = "blue") +
+  labs(title = "Y2 vs X2", x = "X2", y = "Y2")
+```
+We could tell from the summary statistics tables that the model for Y2 ~ X2 doesn't perform as well as Y1 ~ X1 but looking at the scatterplots we can see there is a strong distinction in that Y2 ~ X2 not having a linear relationship. 
+
+\subsection*{b.)}
+
+Scatterplot for residuals vs fitted Y1 values
+```{r comment=NA}
+plot_data <- data.frame(
+  fitted = fitted(lr_model_1),
+  residuals = residuals(lr_model_1)
+)
+
+# Create the correct residual plot
+ggplot(plot_data, aes(x = fitted, y = residuals)) +
+  geom_point() +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(x = "Fitted values", 
+       y = "Residuals",
+       title = "Residuals vs Fitted values of Y1") +
+  theme_minimal()
+```
+As we can see, not a perfect linear fit. There is a clear trend that the sd for residuals increases as fitted values increase.
+
+Scatterplot for Residuals vs Fitted values of Y2
+```{r, comment=NA, tidy = TRUE, tidy.opts = list(width.cutoff = 60)}
+# HELP. FITTED VALUE BEING THE X AXIS VALUES? SHOULDN"T IT BE Y?
+plot_data <- data.frame(
+  fitted = fitted(lr_model_2),
+  residuals = residuals(lr_model_2)
+)
+
+# Create the correct residual plot
+ggplot(plot_data, aes(x = fitted, y = residuals)) +
+  geom_point() +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(x = "Fitted values", 
+       y = "Residuals",
+       title = "Residuals vs Fitted values of Y2") +
+  theme_minimal()
+```
+Even more apparent here, not a good linear fit. We can clearly see a curvature trend in the plot therefore we would need to perform transformations to get a proper fit before making linear predictions.
+
+Q-Q plot of lr_model_1:
+```{r comment=NA}
+residuals <- residuals(lr_model_1)
+
+# Create the Q-Q plot
+qqnorm(residuals, main = "Normal Q-Q Plot of Residuals for Y1 ~ X1")
+qqline(residuals, col = "red")
+plot_data <- data.frame(residuals = residuals(lr_model_1))
+
+```
+We can see that the left and right ends of the plot deviate from the line indicating that the data has more extreme values than what is expected for a normal distribution.
+
+Q-Q plot of lr_model_2:
+```{r comment=NA}
+residuals <- residuals(lr_model_2)
+
+# Create the Q-Q plot
+qqnorm(residuals,  main = "Normal Q-Q Plot of Residuals for Y2 ~ X2")
+qqline(residuals, col = "red")
+plot_data <- data.frame(residuals = residuals(lr_model_2))
+```
+We can see the right ends of the data separating from the diagonal line, specifically splitting downwards. 
+When the points are below the diagonal line, it implies that the sample residuals is less than what the residuals should be compared to a normal distribution. 
+Since this appears most evidently on the right side, this suggests the positive residuals is less than what they would be if predicted by a normal distribution. Therefore the data is skewed to the right.
+
+Create a histogram of standardized regression residuals
+```{r comment=NA}
+residuals <- residuals(lr_model_1) #Get our residuals from the model
+
+# Standardize the residuals
+std_residuals <- rstandard(lr_model_1)
+
+# Create a histogram
+hist(std_residuals, 
+     main = "Histogram of Standardized Residuals for Y1 ~ X1",
+     xlab = "Standardized Residuals",
+     ylab = "Frequency",
+     col = "lightblue", 
+     border = "black")
+```
+As we predicted, there are heavy tails in this histogram. A normal distribution shouldn't have as many extreme values as what is found here.
+
+```{r comment=NA}
+# Extract residuals from the model
+residuals <- residuals(lr_model_2)
+
+# Standardize the residuals
+std_residuals <- rstandard(lr_model_2)
+
+# Create a histogram
+hist(std_residuals, 
+     main = "Histogram of Standardized Residuals for Y2 ~ X2",
+     xlab = "Standardized Residuals",
+     ylab = "Frequency",
+     col = "lightblue", 
+     border = "black")
+```
+Follows our prediction from the Q-Q plot. The data is indeed skewed toward the right, therefore residuals in the right is less than what they should be in a normal distribution.
+
+\subsection*{c.)}
+Going back to the residual plot of Y1 ~ X1 we see trumpet shape, meaning the bunching of the y's in the left and spreading out moving right, which implies that we have a nonconstant variance. 
+This violates the assumption that all our error terms have the same variance. 
+Additionally, the variance of the residuals is increasing along the x axis, and so this violates the assumption that the error terms are independent of x as well. 
+
+Now looking at the residual plot of Y2 ~ X2 we clearly see a negative polynomial curvature throughout the residuals moving along the x axis. This violates linearity assumption in that the relationship between X2 and Y2 are not linear. The data will need to first be transformed by a log function since the long function has a concave shape. 
+
+\subsection*{d.)}
+First to transform Y1 ~ X1. I'll take log(Y1) as Y1 only consists of positive values. Additionally I will introduce a polynomial term to capture any potential nonlinear relationship in the data. Looking at the scatterplot we can see a much better linear fit.
+```{r comment=NA}
+log_model_1 <- lm(log(Y1) ~ X1 + I(X1^2), data = nonlinear_data)
+
+ggplot(nonlinear_data, aes(x = X1, y = log(Y1))) +
+  geom_point() +
+  geom_smooth(method = "lm", formula = y ~ x, se = FALSE, color = "red") +
+  labs(title = "Log(Y1) vs (X1 + X1^2)", 
+       x = "X1", 
+       y = "Log(Y1)") +
+  theme_minimal()
+```
+
+Next to transform Y2 ~ X2
+```{r comment=NA}
+log_model_2 <- lm(Y2 ~ X2 + I(X2^2), data = nonlinear_data)
+
+ggplot(nonlinear_data, aes(x = X2 + I(X2^2), y = Y2)) +
+  geom_point() +
+  geom_smooth(method = "lm",formula = y ~ x, se = FALSE, color = "red") +
+  labs(title = "Y2 vs (X2 + X2^2)", 
+       x = "X2 + X2^2", 
+       y = "Y2") +
+  theme_minimal()
+
+```
+
+\subsection*{e.)}
+
+Here is the residual plot for revised model of Log(Y1) ~ X1 + I(X1^2)
+```{r comment=NA}
+plot_data <- data.frame(
+  fitted = fitted(log_model_1),
+  residuals = residuals(log_model_1)
+)
+
+# Create the correct residual plot
+ggplot(plot_data, aes(x = fitted, y = residuals)) +
+  geom_point() +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(x = "Fitted values", 
+       y = "Residuals",
+       title = "Residuals vs fitted values of Log(Y1) ~ X1 + X1^2") +
+  theme_minimal()
+```
+
+Here is the residual plot for revised model Y2 ~ X1 + I(X1^2)
+
+```{r comment=NA}
+plot_data <- data.frame(
+  fitted = fitted(log_model_2),
+  residuals = residuals(log_model_2)
+)
+
+# Create the correct residual plot
+ggplot(plot_data, aes(x = fitted, y = residuals)) +
+  geom_point() +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(x = "Fitted values", 
+       y = "Residuals",
+       title = "Residuals vs fitted values of Y2 ~ X2 + X2^2") +
+  theme_minimal()
+```
+As we can see, both residual plots display no apparent curvature to the data. Therefore, a lack of a curve suggests that it is likely that the linear assumptions of the model now hold.
+
+
+
+
+
+
+
