@@ -1,4 +1,4 @@
-#Simple Linear Regression Implementation
+# Simple Linear Regression Implementation
 
 In this r markdown I implemented my own custom simple linear regression method which uses both qr-decomposition
 and inverse methods using matrix algebra. Also produces confidence and/or prediction intervals. 
